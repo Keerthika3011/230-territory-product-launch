@@ -35,8 +35,8 @@ def lambda_handler(event, context):
     # Build lookup: HCO_ID -> HCO details
     hco_lookup = {h["HCO_ID"]: h for h in hco_rows}
  
-    # Build lookup: Postcode_Prefix -> Geography zone
-    geo_lookup = {g["Postcode_Prefix"]: g for g in geo_rows}
+    # Build lookup: Postcode_Sector-> Geography zone
+    geo_lookup = {g["Postcode_Sector"]: g for g in geo_rows}
  
     priority_weight = {"High": 3, "Medium": 2, "Low": 1}
     segment_bonus = {"Target": 2, "Non-target": 0}
@@ -69,11 +69,11 @@ def lambda_handler(event, context):
  
     for h in sorted(hcps, key=lambda x: -x["workload_score"]):
         lightest = min(territory_load, key=territory_load.get)
-        territory_load[lightest] += h["workload_score"]
+        territory_load[lightest] += h["workload_Units"]
         assignments.append({
             "hcp_id": h["hcp_id"],
             "assigned_territory": lightest,
-            "workload_score": h["workload_score"],
+            "workload_Units": h["workload_Units"],
             "geo_zone": h["geo_zone"]
         })
  
