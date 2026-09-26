@@ -6,8 +6,8 @@ phases:
   build:
     commands:
       - docker build -t 230-territory-solver .
-      - docker tag 230-territory-solver:latest $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/gilead-territory-solver:latest
+      - docker tag 230-territory-solver:latest $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/230-territory-solver:latest
   post_build:
     commands:
-      - docker push $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/gilead-territory-solver:latest
+      - docker push $AWS_ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com/230-territory-solver:latest
  
