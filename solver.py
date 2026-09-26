@@ -6,7 +6,8 @@ from io import BytesIO
 s3 = boto3.client("s3")
  
 S3_BUCKET = "230-hcp-territories-data"
-S3_KEY = "Input_UK_HCP_Universe_MockData_TerritoryZero_v1.xlsx" 
+S3_KEY = "Input_UK_HCP_Universe_MockData_TerritoryZero_v1.xlsx"
+ 
  
 def load_sheet_as_dicts(wb, sheet_name):
     ws = wb[sheet_name]
@@ -15,6 +16,7 @@ def load_sheet_as_dicts(wb, sheet_name):
     for row in ws.iter_rows(min_row=2, values_only=True):
         rows.append(dict(zip(headers, row)))
     return rows
+ 
  
 def lambda_handler(event, context):
     if "body" in event:
@@ -29,59 +31,81 @@ def lambda_handler(event, context):
     wb = openpyxl.load_workbook(BytesIO(obj["Body"].read()), data_only=True)
  
     hcp_rows = load_sheet_as_dicts(wb, "HCP_Universe")
-    hco_rows = load_sheet_as_dicts(wb, "HCO_Master")
     geo_rows = load_sheet_as_dicts(wb, "Geography_Reference")
  
-    # Build lookup: HCO_ID -> HCO details
-    hco_lookup = {h["HCO_ID"]: h for h in hco_rows}
- 
-    # Build lookup: Postcode_Sector-> Geography zone
-    geo_lookup = {g["Postcode_Sector"]: g for g in geo_rows}
- 
-    priority_weight = {"High": 3, "Medium": 2, "Low": 1}
-    segment_bonus = {"Target": 2, "Non-target": 0}
+    # Real join key is Postcode_Sector, not Postcode_Prefix
+    geo_lookup = {g["Postcode_Sector"]: g for g in geo_rows if g.get("Postcode_Sector")}
  
     hcps = []
     for r in hcp_rows:
-        hco = hco_lookup.get(r.get("Primary_HCO_ID"), {})
-        Postcode_Sector = (r.get("Postcode") or "").split(" ")[0]
-        geo = geo_lookup.get(Postcode_Sector, {})
+        # Only include active records
+        status = (r.get("Record_Status") or "").strip().lower()
+        if status and status != "active":
+            continue
  
-        score = (
-            priority_weight.get(r.get("Call_Priority", "Medium"), 2)
-            + segment_bonus.get(r.get("Segment", "Non-target"), 0)
-        )
+        postcode_sector = r.get("Postcode_Sector")
+        geo = geo_lookup.get(postcode_sector, {})
+ 
+        workload = r.get("Workload_Units")
+        value = r.get("Value_Units")
+ 
+        try:
+            workload = float(workload) if workload is not None else 0.0
+        except (TypeError, ValueError):
+            workload = 0.0
+        try:
+            value = float(value) if value is not None else 0.0
+        except (TypeError, ValueError):
+            value = 0.0
  
         hcps.append({
-            "hcp_id": r["HCP_ID"],
-            "call_priority": r.get("Call_Priority"),
-            "segment": r.get("Segment"),
-            "postcode": r.get("Postcode"),
-            "hco_name": r.get("Primary_HCO_Name"),
-            "formulary_status": hco.get("Formulary_Status_Cardiology"),
-            "geo_zone": geo.get("Suggested_Territory_Zone"),
-            "workload_score": score
+            "hcp_id": r.get("HCP_ID"),
+            "primary_specialty": r.get("Primary_Specialty"),
+            "primary_hco_name": r.get("Primary_HCO_Name"),
+            "best_segment": r.get("Best_Segment"),
+            "target_flag": r.get("Target_Flag"),
+            "target_tier": r.get("Target_Tier"),
+            "postcode_sector": postcode_sector,
+            "nhs_region": geo.get("NHS_Region"),
+            "nhs_nation": geo.get("NHS_Nation"),
+            "workload_units": workload,
+            "value_units": value,
         })
  
     territory_names = [f"Territory_{i+1}" for i in range(num_territories)]
-    territory_load = {t: 0 for t in territory_names}
+    territory_load = {t: 0.0 for t in territory_names}
+    territory_value = {t: 0.0 for t in territory_names}
     assignments = []
  
-    for h in sorted(hcps, key=lambda x: -x["workload_score"]):
+    # Greedy balance on Workload_Units — the metric the source data is designed around
+    for h in sorted(hcps, key=lambda x: -x["workload_units"]):
         lightest = min(territory_load, key=territory_load.get)
-        territory_load[lightest] += h["workload_Units"]
+        territory_load[lightest] += h["workload_units"]
+        territory_value[lightest] += h["value_units"]
         assignments.append({
             "hcp_id": h["hcp_id"],
+            "primary_specialty": h["primary_specialty"],
+            "primary_hco_name": h["primary_hco_name"],
+            "best_segment": h["best_segment"],
+            "postcode_sector": h["postcode_sector"],
+            "nhs_region": h["nhs_region"],
             "assigned_territory": lightest,
-            "workload_Units": h["workload_Units"],
-            "geo_zone": h["geo_zone"]
+            "workload_units": h["workload_units"],
+            "value_units": h["value_units"],
         })
+ 
+    territory_summary = {
+        t: {"total_workload_units": round(territory_load[t], 1),
+            "total_value_units": round(territory_value[t], 1)}
+        for t in territory_names
+    }
  
     return {
         "statusCode": 200,
         "body": json.dumps({
+            "hcp_count": len(hcps),
             "assignments": assignments,
-            "territory_summary": territory_load
+            "territory_summary": territory_summary
         })
     }
  
