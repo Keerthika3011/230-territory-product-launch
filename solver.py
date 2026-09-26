@@ -44,8 +44,8 @@ def lambda_handler(event, context):
     hcps = []
     for r in hcp_rows:
         hco = hco_lookup.get(r.get("Primary_HCO_ID"), {})
-        postcode_prefix = (r.get("Postcode") or "").split(" ")[0]
-        geo = geo_lookup.get(postcode_prefix, {})
+        Postcode_Sector = (r.get("Postcode") or "").split(" ")[0]
+        geo = geo_lookup.get(Postcode_Sector, {})
  
         score = (
             priority_weight.get(r.get("Call_Priority", "Medium"), 2)
