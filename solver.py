@@ -33,12 +33,10 @@ def lambda_handler(event, context):
     hcp_rows = load_sheet_as_dicts(wb, "HCP_Universe")
     geo_rows = load_sheet_as_dicts(wb, "Geography_Reference")
  
-    # Real join key is Postcode_Sector, not Postcode_Prefix
     geo_lookup = {g["Postcode_Sector"]: g for g in geo_rows if g.get("Postcode_Sector")}
  
     hcps = []
     for r in hcp_rows:
-        # Only include active records
         status = (r.get("Record_Status") or "").strip().lower()
         if status and status != "active":
             continue
@@ -77,7 +75,6 @@ def lambda_handler(event, context):
     territory_value = {t: 0.0 for t in territory_names}
     assignments = []
  
-    # Greedy balance on Workload_Units — the metric the source data is designed around
     for h in sorted(hcps, key=lambda x: -x["workload_units"]):
         lightest = min(territory_load, key=territory_load.get)
         territory_load[lightest] += h["workload_units"]
@@ -100,12 +97,28 @@ def lambda_handler(event, context):
         for t in territory_names
     }
  
+    result_payload = {
+        "hcp_count": len(hcps),
+        "assignments": assignments,
+        "territory_summary": territory_summary
+    }
+ 
+    # Write full result to S3 instead of returning it directly
+    # (Step Functions has a 256 KB limit on data passed between states)
+    output_key = "outputs/territory_assignment_result.json"
+    s3.put_object(
+        Bucket=S3_BUCKET,
+        Key=output_key,
+        Body=json.dumps(result_payload),
+        ContentType="application/json"
+    )
+ 
     return {
         "statusCode": 200,
         "body": json.dumps({
+            "message": "Territory assignment complete",
             "hcp_count": len(hcps),
-            "assignments": assignments,
-            "territory_summary": territory_summary
+            "result_location": f"s3://{S3_BUCKET}/{output_key}"
         })
     }
  
