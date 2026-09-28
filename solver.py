@@ -13,24 +13,26 @@ S3_KEY = "Input_UK_HCP_Universe_MockData_TerritoryZero_v1.xlsx"
 def load_sheet_as_dicts(wb, sheet_name):
     ws = wb[sheet_name]
     headers = [cell.value for cell in ws[1]]
-    rows = []
-    for row in ws.iter_rows(min_row=2, values_only=True):
-        rows.append(dict(zip(headers, row)))
-    return rows
+    return [dict(zip(headers, row)) for row in ws.iter_rows(min_row=2, values_only=True)]
+ 
+ 
+def to_float(v):
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
  
  
 def lambda_handler(event, context):
-    if "body" in event:
-        body = json.loads(event["body"])
-    else:
-        body = event
- 
+    body = json.loads(event["body"]) if "body" in event else event
     brief = body.get("brief", body)
-    num_territories = brief.get("num_territories", 8)
+    try:
+        num_territories = int(brief.get("num_territories", 8))
+    except (TypeError, ValueError):
+        num_territories = 8
  
     obj = s3.get_object(Bucket=S3_BUCKET, Key=S3_KEY)
     wb = openpyxl.load_workbook(BytesIO(obj["Body"].read()), data_only=True)
- 
     hcp_rows = load_sheet_as_dicts(wb, "HCP_Universe")
     geo_rows = load_sheet_as_dicts(wb, "Geography_Reference")
     geo_lookup = {g["Postcode_Sector"]: g for g in geo_rows if g.get("Postcode_Sector")}
@@ -40,40 +42,21 @@ def lambda_handler(event, context):
         status = (r.get("Record_Status") or "").strip().lower()
         if status and status != "active":
             continue
- 
-        postcode_sector = r.get("Postcode_Sector")
-        geo = geo_lookup.get(postcode_sector, {})
- 
-        workload = r.get("Workload_Units")
-        value = r.get("Value_Units")
-        try:
-            workload = float(workload) if workload is not None else 0.0
-        except (TypeError, ValueError):
-            workload = 0.0
-        try:
-            value = float(value) if value is not None else 0.0
-        except (TypeError, ValueError):
-            value = 0.0
- 
+        sector = r.get("Postcode_Sector")
+        geo = geo_lookup.get(sector, {})
         hcps.append({
             "hcp_id": r.get("HCP_ID"),
             "primary_specialty": r.get("Primary_Specialty"),
             "primary_hco_name": r.get("Primary_HCO_Name"),
             "best_segment": r.get("Best_Segment"),
-            "postcode_sector": postcode_sector,
+            "postcode_sector": sector,
             "nhs_region": geo.get("NHS_Region"),
-            "workload_units": workload,
-            "value_units": value,
+            "workload_units": to_float(r.get("Workload_Units")),
+            "value_units": to_float(r.get("Value_Units")),
         })
  
-    # --- Real OR-Tools optimization ---
-    # NOTE: solving a pure per-HCP assignment problem with ~1000 binary
-    # variables x territories can be slow/heavy for CBC in a Lambda's time
-    # limit. To keep this practical, we pre-group HCPs into buckets by
-    # postcode_sector (summed workload per sector), and let the solver
-    # balance sectors across territories instead of individual HCPs.
-    sector_totals = {}
-    sector_members = {}
+    # Roll HCPs up to postcode sector, then balance sectors across territories
+    sector_totals, sector_members = {}, {}
     for h in hcps:
         sec = h["postcode_sector"] or "UNKNOWN"
         sector_totals[sec] = sector_totals.get(sec, 0.0) + h["workload_units"]
@@ -81,82 +64,69 @@ def lambda_handler(event, context):
  
     sectors = list(sector_totals.keys())
     n = len(sectors)
-    total_workload = sum(sector_totals.values())
-    target_per_territory = total_workload / num_territories if num_territories else 0
+    target = sum(sector_totals.values()) / num_territories
  
     solver = pywraplp.Solver.CreateSolver("CBC")
-    x = {}
-    for i in range(n):
-        for t in range(num_territories):
-            x[i, t] = solver.BoolVar(f"x_{i}_{t}")
- 
-    # Each sector assigned to exactly one territory
+    x = {(i, t): solver.BoolVar(f"x_{i}_{t}") for i in range(n) for t in range(num_territories)}
     for i in range(n):
         solver.Add(sum(x[i, t] for t in range(num_territories)) == 1)
- 
-    # Minimize the maximum deviation from the ideal balanced load
     max_dev = solver.NumVar(0, solver.infinity(), "max_dev")
     for t in range(num_territories):
         load = sum(sector_totals[sectors[i]] * x[i, t] for i in range(n))
-        solver.Add(load - target_per_territory <= max_dev)
-        solver.Add(target_per_territory - load <= max_dev)
- 
+        solver.Add(load - target <= max_dev)
+        solver.Add(target - load <= max_dev)
     solver.Minimize(max_dev)
-    solver.SetTimeLimit(20000)  # 20 second cap so it can't run past Lambda's timeout
+    solver.SetTimeLimit(20000)
     solver.Solve()
  
-    territory_names = [f"Territory_{i+1}" for i in range(num_territories)]
-    territory_load = {t: 0.0 for t in territory_names}
-    territory_value = {t: 0.0 for t in territory_names}
+    names = [f"Territory_{i+1}" for i in range(num_territories)]
+    load_by_t = {t: 0.0 for t in names}
+    value_by_t = {t: 0.0 for t in names}
     assignments = []
- 
     for i in range(n):
         for t in range(num_territories):
             if x[i, t].solution_value() > 0.5:
-                tname = territory_names[t]
-                sec = sectors[i]
-                for h in sector_members[sec]:
-                    territory_load[tname] += h["workload_units"]
-                    territory_value[tname] += h["value_units"]
-                    assignments.append({
-                        "hcp_id": h["hcp_id"],
-                        "primary_specialty": h["primary_specialty"],
-                        "primary_hco_name": h["primary_hco_name"],
-                        "best_segment": h["best_segment"],
-                        "postcode_sector": h["postcode_sector"],
-                        "nhs_region": h["nhs_region"],
-                        "assigned_territory": tname,
-                        "workload_units": h["workload_units"],
-                        "value_units": h["value_units"],
-                    })
+                for h in sector_members[sectors[i]]:
+                    load_by_t[names[t]] += h["workload_units"]
+                    value_by_t[names[t]] += h["value_units"]
+                    assignments.append({**{k: h[k] for k in (
+                        "hcp_id", "primary_specialty", "primary_hco_name",
+                        "best_segment", "postcode_sector", "nhs_region",
+                        "workload_units", "value_units")},
+                        "assigned_territory": names[t]})
  
+    assignments.sort(key=lambda a: (a["assigned_territory"], str(a["hcp_id"])))
     territory_summary = {
-        t: {"total_workload_units": round(territory_load[t], 1),
-            "total_value_units": round(territory_value[t], 1)}
-        for t in territory_names
-    }
+        t: {"total_workload_units": round(load_by_t[t], 1),
+            "total_value_units": round(value_by_t[t], 1)} for t in names}
  
-    result_payload = {
+    result = {"hcp_count": len(hcps), "assignments": assignments,
+              "territory_summary": territory_summary}
+    s3.put_object(Bucket=S3_BUCKET, Key="outputs/territory_assignment_result.json",
+                  Body=json.dumps(result), ContentType="application/json")
+ 
+    # ---- Excel export ----
+    out = openpyxl.Workbook()
+    ws1 = out.active
+    ws1.title = "HCP_Territory_Assignment"
+    cols = ["hcp_id", "primary_specialty", "primary_hco_name", "best_segment",
+            "postcode_sector", "nhs_region", "assigned_territory",
+            "workload_units", "value_units"]
+    ws1.append(cols)
+    for a in assignments:
+        ws1.append([a[c] for c in cols])
+    ws2 = out.create_sheet("Territory_Summary")
+    ws2.append(["territory", "total_workload_units", "total_value_units"])
+    for t, s in territory_summary.items():
+        ws2.append([t, s["total_workload_units"], s["total_value_units"]])
+    buf = BytesIO()
+    out.save(buf)
+    s3.put_object(Bucket=S3_BUCKET, Key="outputs/territory_assignment_result.xlsx",
+                  Body=buf.getvalue(),
+                  ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+ 
+    return {"statusCode": 200, "body": json.dumps({
+        "message": "Territory assignment complete",
         "hcp_count": len(hcps),
-        "assignments": assignments,
-        "territory_summary": territory_summary
-    }
- 
-    output_key = "outputs/territory_assignment_result.json"
-    s3.put_object(
-        Bucket=S3_BUCKET,
-        Key=output_key,
-        Body=json.dumps(result_payload),
-        ContentType="application/json"
-    )
- 
-    return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "message": "Territory assignment complete (OR-Tools optimized)",
-            "hcp_count": len(hcps),
-            "sectors_balanced": n,
-            "result_location": f"s3://{S3_BUCKET}/{output_key}"
-        })
-    }
+        "excel": f"s3://{S3_BUCKET}/outputs/territory_assignment_result.xlsx"})}
  
