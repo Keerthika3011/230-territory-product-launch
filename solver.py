@@ -128,7 +128,7 @@ def lambda_handler(event, context):
  
     return {"run_id": run_id, "hcp_count": len(hcps),
             "territory_summary": territory_summary,
-            "json_key": f"outputs/{run_id}/territory_assignment_result.json",
-            "xlsx_key": f"outputs/{run_id}/territory_assignment_result.xlsx"}
+            "json_key": f"outputs/{run_id}.json",
+            "xlsx_key": f"outputs/{run_id}.xlsx"}
  
  
