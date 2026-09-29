@@ -26,6 +26,7 @@ def to_float(v):
 def lambda_handler(event, context):
     body = json.loads(event["body"]) if "body" in event else event
     brief = body.get("brief", body)
+    run_id = body.get("run_id" , "manual")
     try:
         num_territories = int(brief.get("num_territories", 8))
     except (TypeError, ValueError):
@@ -125,8 +126,9 @@ def lambda_handler(event, context):
                   Body=buf.getvalue(),
                   ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
  
-    return {"statusCode": 200, "body": json.dumps({
-        "message": "Territory assignment complete",
-        "hcp_count": len(hcps),
-        "excel": f"s3://{S3_BUCKET}/outputs/territory_assignment_result.xlsx"})}
+    return {"run_id": run_id, "hcp_count": len(hcps),
+            "territory_summary": territory_summary,
+            "json_key": f"outputs/{run_id}/territory_assignment_result.json",
+            "xlsx_key": f"outputs/{run_id}/territory_assignment_result.xlsx"}
+ 
  
