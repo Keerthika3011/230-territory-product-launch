@@ -193,6 +193,8 @@ def lambda_handler(event, context):
             continue
         assignments.append({
             "hcp_id": h["hcp_id"],
+            "first_name": h["first_name"],
+            "last_name": h["last_name"],
             "primary_specialty": h["primary_specialty"],
             "primary_hco_name": h["primary_hco_name"],
             "best_segment": h["best_segment"],
@@ -202,6 +204,7 @@ def lambda_handler(event, context):
             "workload_units": h["workload_units"],
             "value_units": h["value_units"],
         })
+ 
     assignments.sort(key=lambda a: (a["territory_name"], str(a["hcp_id"])))
  
     result = {
