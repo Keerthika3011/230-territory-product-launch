@@ -54,6 +54,8 @@ def lambda_handler(event, context):
         sector = r.get("Postcode_Sector")
         hcps.append({
             "hcp_id": r.get("HCP_ID"),
+            "first_name" : r.get("First_Name"),
+                          "last_name": r.get("Last_Name"),
             "primary_specialty": r.get("Primary_Specialty"),
             "primary_hco_name": r.get("Primary_HCO_Name"),
             "best_segment": r.get("Best_Segment"),
