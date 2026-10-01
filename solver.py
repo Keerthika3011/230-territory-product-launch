@@ -270,5 +270,14 @@ def lambda_handler(event, context):
     buf = BytesIO()
     out.save(buf)
     s3.put_object(Bucket=S3_BUCKET, Key=xlsx_key, Body=buf.getvalue(),
-                   ContentType="application
+                   ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+ 
+    return {
+        "run_id": run_id,
+        "hcp_count": len(hcps),
+        "territory_summary": territory_summary,
+        "json_key": json_key,
+        "xlsx_key": xlsx_key,
+    }
+ 
  
