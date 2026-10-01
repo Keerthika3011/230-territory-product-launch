@@ -211,8 +211,8 @@ def lambda_handler(event, context):
         "sector_mapping": sheet1_rows,
     }
  
-    json_key = f"outputs/{run_id}/territory_assignment_result.json"
-    xlsx_key = f"outputs/{run_id}/territory_assignment_result.xlsx"
+    json_key = f"outputs/{run_id}/territory_alignment.json"
+    xlsx_key = f"outputs/{run_id}/territory_alignment.xlsx"
  
     s3.put_object(Bucket=S3_BUCKET, Key=json_key,
                    Body=json.dumps(result), ContentType="application/json")
@@ -263,9 +263,9 @@ def lambda_handler(event, context):
                    ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
  
     # --- Pointer file so the lookup tool always finds the latest run ---
-    s3.put_object(Bucket=S3_BUCKET, Key="outputs/latest_run.json",
-                   Body=json.dumps({"run_id": run_id, "json_key": json_key, "xlsx_key": xlsx_key}),
-                   ContentType="application/json")
+    s3.put_object(Bucket=S3_BUCKET, Key=xlsx_key, Body=buf.getvalue(),
+                   ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+ 
  
     return {
         "run_id": run_id,
@@ -274,4 +274,5 @@ def lambda_handler(event, context):
         "json_key": json_key,
         "xlsx_key": xlsx_key,
     }
+ 
  
